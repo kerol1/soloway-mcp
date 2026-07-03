@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SoloWay MCP server evaluations (mcp-builder format).
+
+  These qa_pairs use STABLE, verifiable answers only. A live bus-booking API has
+  inherently non-stable values (prices, seat counts, trip ids change daily), so
+  price/availability assertions are deliberately NOT graded here — they live in the
+  operational smoke suite (run manually against https://mcp.soloway.com.ua/mcp).
+
+  Stable anchors used: Kyiv city_id = 6450, Lviv city_id = 6164 (internal SoloWay ids,
+  resolved via get the autocomplete behind search_trips). Run each question through an
+  MCP client connected to the server; the model must use the tools to answer.
+-->
+<evaluation>
+  <qa_pair>
+    <question>Using the SoloWay tools, resolve the city "Львів" (Lviv, Ukraine) and report its internal numeric city_id.</question>
+    <answer>6164</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Using the SoloWay tools, resolve the city "Київ" (Kyiv, the capital) and report its internal numeric city_id (the city itself, not a raion/district).</question>
+    <answer>6450</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Call get_calendar_prices for the Kyiv→Lviv route for any month. What ISO 4217 currency code does the response report?</question>
+    <answer>UAH</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Call search_trips with from="Kyiv" and to="Lviv" using the default locale and no explicit city ids. Does the from-city resolve to a single city, or does the tool return a disambiguation list of candidate cities? Answer exactly "resolved" or "disambiguation".</question>
+    <answer>disambiguation</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Call search_trips for from_city_id=6450, to_city_id=6164 for a near-future weekday. Are there any direct intercity bus trips on that route (i.e. at least one trip with transfers = 0)? Answer "yes" or "no".</question>
+    <answer>yes</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Call get_trip_details for any Kyiv→Lviv trip. In the returned stops list, what is the stop_type value of the very first stop? Answer the exact enum string.</question>
+    <answer>DEPARTURE</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Call search_trips for from_city_id=6450, to_city_id=6164 for a date that is clearly in the past (e.g. 2020-01-01). Does the tool return an error, or an empty trip list with a note that the date is in the past? Answer "error" or "empty".</question>
+    <answer>empty</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Look at the booking link returned by search_trips for any route. What is the value of the utm_medium query parameter in that URL?</question>
+    <answer>ai-assistant</answer>
+  </qa_pair>
+</evaluation>

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "ua.com.soloway/soloway",
+  "title": "SoloWay",
+  "description": "Search live intercity bus trips across Ukraine and Europe. Read-only tools: search_trips (trips on a date with prices, seats, carriers and a booking link), get_calendar_prices (cheapest day in a month) and get_trip_details (stops, carrier discounts and seat info). Booking happens on soloway.com.ua.",
+  "version": "1.0.0",
+  "websiteUrl": "https://soloway.com.ua",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.soloway.com.ua/mcp"
+    }
+  ]
+}
