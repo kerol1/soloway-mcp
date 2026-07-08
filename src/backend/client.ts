@@ -84,6 +84,17 @@ export class BackendClient {
     ).then((data) => data.data ?? []);
   }
 
+  /**
+   * Batch id → full city (reverse of autocomplete). Backend caps at 10 ids and returns a BARE
+   * `CityDto[]` (NOT the `{data}` envelope autocomplete uses). Used to (a) resolve a caller-supplied
+   * numeric *_city_id into a real city object and (b) render a name-resolved city in the requested
+   * locale when it was looked up in the other script. Empty input → no call.
+   */
+  async citiesByIds(ids: string[], locale: Locale): Promise<BackendCity[]> {
+    if (ids.length === 0) return [];
+    return this.getJson<BackendCity[]>(`/api/search/cities?${qs({ ids: ids.join(','), locale })}`, 'cities-by-id');
+  }
+
   /** Per-date min prices for a month (UAH-equivalent). `month` = YYYY-MM. No locale param. */
   async calendarPrices(fromId: string, toId: string, month: string): Promise<CalendarPricesResponse> {
     return this.getJson<CalendarPricesResponse>(

@@ -30,4 +30,9 @@ export class TtlCache<V> {
     }
     this.store.set(key, { value, expires: Date.now() + this.ttlMs });
   }
+
+  /** Drops every entry. Used by tests for isolation; harmless in production. */
+  clear(): void {
+    this.store.clear();
+  }
 }

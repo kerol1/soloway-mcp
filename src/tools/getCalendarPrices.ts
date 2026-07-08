@@ -38,8 +38,12 @@ const outputSchema = {
   month: z.string(),
   currency: z.string().describe('Always UAH (calendar prices are UAH-equivalent).'),
   pending: z.boolean().describe('true = some carriers still loading; call again shortly for a fuller month.'),
-  coverage: z.enum(['full', 'today_onward']).describe('"today_onward" = current month omits past days (not "no buses").'),
-  prices: z.array(dayPriceSchema).describe('Per-day cheapest price, ascending by date.'),
+  data_status: z.enum(['complete', 'partial']).describe('"complete" = final/authoritative; "partial" = still loading (mirrors pending).'),
+  coverage: z.enum(['full', 'today_onward']).describe('Date-range coverage (separate from load status): "today_onward" = current month omits past days (not "no buses").'),
+  prices: z.array(dayPriceSchema).describe('Per-day cheapest price, ascending by date. A day with min_price=null was checked and has NO trips (distinct from a day still loading — see missing_days).'),
+  loaded_days: z.array(z.string()).describe('Days already resolved (the dates present in prices, priced or null).'),
+  missing_days: z.array(z.string()).describe('Days in the queried window not yet loaded — re-poll for these. Empty when data_status="complete".'),
+  completion_percent: z.number().describe('Percent of the queried window resolved so far (0–100; 100 when complete).'),
   cheapest: z.object({ date: z.string(), min_price: z.number() }).nullable().describe('Cheapest day in the month, or null if none priced.'),
   booking_url: z.string().nullable().describe('Deep-link to search the cheapest day (with utm).'),
   notes: z.array(z.string()),
@@ -50,8 +54,12 @@ interface CalendarOverrides {
   resolved_to?: CityRef;
   needs_disambiguation?: { field: 'from' | 'to'; query: string; candidates: CityRef[] };
   pending?: boolean;
+  data_status?: 'complete' | 'partial';
   coverage?: 'full' | 'today_onward';
   prices?: { date: string; min_price: number | null }[];
+  loaded_days?: string[];
+  missing_days?: string[];
+  completion_percent?: number;
   cheapest?: { date: string; min_price: number } | null;
   booking_url?: string | null;
   notes?: string[];
@@ -65,8 +73,12 @@ function makeCalendar(month: string, over: CalendarOverrides) {
     month,
     currency: 'UAH',
     pending: over.pending ?? false,
+    data_status: over.data_status ?? ('complete' as const),
     coverage: over.coverage ?? ('full' as const),
     prices: over.prices ?? [],
+    loaded_days: over.loaded_days ?? [],
+    missing_days: over.missing_days ?? [],
+    completion_percent: over.completion_percent ?? 100,
     cheapest: over.cheapest ?? null,
     booking_url: over.booking_url ?? null,
     notes: over.notes ?? [],
@@ -75,6 +87,48 @@ function makeCalendar(month: string, over: CalendarOverrides) {
 
 function currentMonthKyiv(): string {
   return new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Kyiv' }).slice(0, 7); // YYYY-MM
+}
+
+function todayInKyiv(): string {
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Kyiv' }); // YYYY-MM-DD
+}
+
+/**
+ * The dates the backend is expected to price for a month, mirroring its buildDateRange: a past month
+ * yields none; the current month starts at today (Kyiv tz); a future month covers the 1st onward.
+ */
+function monthWindow(month: string): string[] {
+  const current = currentMonthKyiv();
+  if (month < current) return [];
+  const [year, mon] = month.split('-').map(Number);
+  const lastDay = new Date(Date.UTC(year!, mon!, 0)).getUTCDate(); // day 0 of next month = last of this
+  const startDay = month === current ? Number(todayInKyiv().slice(8, 10)) : 1;
+  const days: string[] = [];
+  for (let day = startDay; day <= lastDay; day++) days.push(`${month}-${String(day).padStart(2, '0')}`);
+  return days;
+}
+
+export interface LoadStatus {
+  loaded_days: string[];
+  missing_days: string[];
+  completion_percent: number;
+  data_status: 'complete' | 'partial';
+}
+
+/**
+ * Turns the backend's (prices, pending) into an explicit load status. A present day (priced or null)
+ * is resolved; an absent day in the queried window is still loading. When !pending the backend is
+ * authoritative that it settled, so we report complete regardless of any window/tz drift.
+ */
+export function computeLoadStatus(prices: Record<string, number | null>, pending: boolean, month: string): LoadStatus {
+  const loaded_days = Object.keys(prices).sort();
+  if (!pending) return { loaded_days, missing_days: [], completion_percent: 100, data_status: 'complete' };
+  const expected = monthWindow(month);
+  const loaded = new Set(loaded_days);
+  const missing_days = expected.filter((date) => !loaded.has(date));
+  const inWindow = expected.length - missing_days.length;
+  const completion_percent = expected.length === 0 ? 100 : Math.round((inWindow / expected.length) * 100);
+  return { loaded_days, missing_days, completion_percent, data_status: 'partial' };
 }
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -138,10 +192,16 @@ export function registerGetCalendarPrices(server: McpServer): void {
           if (min_price != null && (cheapest === null || min_price < cheapest.min_price)) cheapest = { date, min_price };
         }
 
+        const load = computeLoadStatus(res.prices, res.pending, args.month);
         const coverage = args.month === currentMonthKyiv() ? ('today_onward' as const) : ('full' as const);
         const notes: string[] = [];
         if (coverage === 'today_onward') notes.push('This is the current month, so days before today are omitted (not "no buses").');
-        if (res.pending) notes.push('Some carriers are still loading — call again shortly for a fuller month.');
+        if (res.pending) {
+          notes.push(
+            `Still loading ${load.missing_days.length} day(s) (${load.completion_percent}% of the month resolved) — ` +
+              'call again shortly for the missing_days. A day shown with min_price=null was checked and has no trips.',
+          );
+        }
 
         const bookingUrl = cheapest
           ? buildDeepLink({ fromCityId: fromRef.city_id, toCityId: toRef.city_id, date: cheapest.date, passengers: 1, utmSource: args.utm_source }).url
@@ -154,7 +214,9 @@ export function registerGetCalendarPrices(server: McpServer): void {
         return reply(
           makeCalendar(args.month, {
             resolved_from: fromRef, resolved_to: toRef,
-            pending: res.pending, coverage, prices, cheapest, booking_url: bookingUrl, notes,
+            pending: res.pending, data_status: load.data_status, coverage, prices,
+            loaded_days: load.loaded_days, missing_days: load.missing_days, completion_percent: load.completion_percent,
+            cheapest, booking_url: bookingUrl, notes,
           }),
           text,
         );

@@ -5,7 +5,7 @@ import { registerGetCalendarPrices } from './tools/getCalendarPrices.js';
 import { registerGetTripDetails } from './tools/getTripDetails.js';
 
 export const SERVER_NAME = 'soloway';
-export const SERVER_VERSION = '0.1.0';
+export const SERVER_VERSION = '0.2.0';
 
 /** ≤512 chars — cross-tool guidance shown to the model on initialize (§3.2). */
 const INSTRUCTIONS =
