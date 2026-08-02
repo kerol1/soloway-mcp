@@ -26,4 +26,12 @@ describe('buildDeepLink', () => {
     const { url } = buildDeepLink({ fromCityId: '1', toCityId: '2', date: '2026-07-01', passengers: 1 });
     expect(new URL(url).searchParams.get('utm_source')).toBe('ai-assistant');
   });
+
+  it('tags nearby-fallback links with utm_campaign and omits it otherwise', () => {
+    const plain = buildDeepLink({ fromCityId: '1', toCityId: '2', date: '2026-07-01', passengers: 1 });
+    expect(new URL(plain.url).searchParams.get('utm_campaign')).toBeNull();
+
+    const nearby = buildDeepLink({ fromCityId: '1', toCityId: '2', date: '2026-07-01', passengers: 1, utmCampaign: 'nearby-fallback' });
+    expect(new URL(nearby.url).searchParams.get('utm_campaign')).toBe('nearby-fallback');
+  });
 });

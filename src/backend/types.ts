@@ -94,3 +94,26 @@ export interface TripDetailsResponse {
   seat_layout: unknown | null; // opaque — most carriers return null
   legal_notice: LocalizedText | null;
 }
+
+// ── Nearby-fallback matrix (GET /api/trips/nearby-pairs) ─────────────────────────
+// Substituted city pairs for an empty search, resolved in-memory on the backend.
+// The MCP verifies each pair with a real search before offering it.
+
+export interface NearbySubstitutionWire {
+  city: BackendCity; // same CityDto record the cities endpoints return, locale-resolved
+  distance_km: number; // straight-line, rounded to 5 km by the backend
+}
+
+/** A substituted pair; `from_sub`/`to_sub` is null on the side that kept the original city. */
+export interface NearbyPairWire {
+  from_id: number;
+  to_id: number;
+  from_sub: NearbySubstitutionWire | null;
+  to_sub: NearbySubstitutionWire | null;
+}
+
+export interface NearbyPairsResponse {
+  case1: NearbyPairWire[]; // exact departure + hub near the arrival
+  case2: NearbyPairWire[]; // hub near the departure + exact arrival
+  case3: NearbyPairWire[]; // both sides substituted (only tried when 1/2 confirm nothing)
+}

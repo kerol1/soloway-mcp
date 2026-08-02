@@ -28,6 +28,12 @@ const RawConfig = z.object({
   SEARCH_MAX_PASSENGERS: z.coerce.number().int().positive().default(10),
   MCP_MAX_CONCURRENT_SEARCHES: z.coerce.number().int().positive().default(8),
   MCP_BUSY_WAIT_MS: z.coerce.number().int().nonnegative().default(1_500),
+  // Nearby-fallback on an empty search: verify substituted city pairs with real searches
+  // and offer confirmed ones. ENABLED is the kill-switch; MAX_VERIFY caps wave-1 pair
+  // searches; the tighter per-search timeout keeps the tool's worst case tolerable.
+  MCP_NEARBY_ENABLED: boolish('true'),
+  MCP_NEARBY_MAX_VERIFY: z.coerce.number().int().positive().default(3),
+  MCP_NEARBY_SEARCH_TIMEOUT_MS: z.coerce.number().int().positive().default(20_000),
   DEFAULT_LOCALE: z.enum(['uk', 'en']).default('uk'),
   CACHE_TTL_AUTOCOMPLETE_MS: z.coerce.number().int().positive().default(3_600_000),
   CACHE_TTL_CALENDAR_MS: z.coerce.number().int().positive().default(900_000),

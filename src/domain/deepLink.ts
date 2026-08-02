@@ -9,6 +9,8 @@ export interface DeepLinkParams {
   date: string; // YYYY-MM-DD
   passengers: number;
   utmSource?: string;
+  /** Set on nearby-fallback links ("nearby-fallback") so AI-agent orders via the feature are separable in attribution. */
+  utmCampaign?: string;
 }
 
 export interface DeepLinkResult {
@@ -32,5 +34,6 @@ export function buildDeepLink(params: DeepLinkParams): DeepLinkResult {
   url.searchParams.set('children', '0');
   url.searchParams.set('utm_source', params.utmSource && params.utmSource.length > 0 ? params.utmSource : 'ai-assistant');
   url.searchParams.set('utm_medium', 'ai-assistant');
+  if (params.utmCampaign) url.searchParams.set('utm_campaign', params.utmCampaign);
   return { url: url.toString(), clamped: params.passengers > DEEP_LINK_MAX_ADULTS };
 }

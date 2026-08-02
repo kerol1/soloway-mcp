@@ -10,7 +10,7 @@ Live intercity bus-trip search across **Ukraine and Europe** as a remote [MCP](h
 
 | Tool | What it does |
 |---|---|
-| `search_trips` | Trips between two cities on a date — live prices, free seats, carriers, duration, transfers, passenger discounts, and a booking deep-link. City names resolve automatically (uk/en), with disambiguation when several cities match. |
+| `search_trips` | Trips between two cities on a date — live prices, free seats, carriers, duration, transfers, passenger discounts, and a booking deep-link. City names resolve automatically (uk/en), with disambiguation when several cities match. On an empty result the tool verifies routes via bigger cities within ~60 km of the requested endpoints and returns confirmed ones in `nearby_alternatives`, each with substitution distances and its own booking link. |
 | `get_calendar_prices` | Cheapest price for each day of a month on a route — find the cheapest day to travel. |
 | `get_trip_details` | Full details of one trip from search results — stops, carrier discounts, seat info. |
 | `ping` | Liveness check. |

@@ -7,11 +7,19 @@ import { localize, type Locale } from '../domain/localize.js';
 import { comparableUah, sortKeyUah } from '../domain/currency.js';
 import { buildDeepLink } from '../domain/deepLink.js';
 import { cityIdInput, cityRefSchema, priceEntrySchema, moneySchema, comparableUahSchema } from '../domain/schemas.js';
+import {
+  wave1Pairs,
+  case3Pairs,
+  substitutionsOf,
+  routeNames,
+  alternativeDistance,
+  type NearbyPairPlan,
+} from '../domain/nearby.js';
 import { Semaphore } from '../lib/semaphore.js';
 import { logger } from '../lib/logger.js';
 import { toolError, unexpectedToolError } from '../util/errors.js';
 import { toolReply as reply } from '../util/reply.js';
-import type { SearchTripResponse } from '../backend/types.js';
+import type { NearbyPairsResponse, SearchTripResponse } from '../backend/types.js';
 
 const searchSlots = new Semaphore(config.MCP_MAX_CONCURRENT_SEARCHES);
 
@@ -57,6 +65,29 @@ export const tripSchema = z.object({
     .describe('Quick min/max discount percent across carrier_discounts (e.g. "−10% to −50%"); null if none.'),
 });
 
+const nearbyAlternativeSchema = z.object({
+  case_no: z
+    .union([z.literal(1), z.literal(2), z.literal(3)])
+    .describe('Which side was substituted: 1 = arrival, 2 = departure, 3 = both.'),
+  from_city_id: z.string().describe('Pass as from_city_id to search_trips to list this route\'s trips.'),
+  from_city_name: z.string(),
+  to_city_id: z.string().describe('Pass as to_city_id to search_trips.'),
+  to_city_name: z.string(),
+  substitutions: z
+    .array(
+      z.object({
+        replaces: z.string().describe('The city the user originally asked for.'),
+        nearby_city: z.string().describe('The bigger city nearby that replaces it.'),
+        distance_km: z.number().int().describe('Straight-line distance between them (rounded to 5 km).'),
+      }),
+    )
+    .describe('ALWAYS relay these distances — the user must understand which city was swapped and how far it is.'),
+  trips_found: z.number().int().describe('Trips CONFIRMED bookable on the date for the requested party size.'),
+  min_price: moneySchema.nullable().describe('Cheapest confirmed trip, carrier-native currency.'),
+  min_price_uah: z.number().nullable().describe('UAH-equivalent of the cheapest confirmed trip; null if no FX rate.'),
+  booking_url: z.string().describe('Booking deep-link for THIS substituted route (tagged utm_campaign=nearby-fallback).'),
+});
+
 const outputSchema = {
   resolved_from: cityRefSchema.optional(),
   resolved_to: cityRefSchema.optional(),
@@ -71,6 +102,14 @@ const outputSchema = {
   booking_url: z.string().nullable().describe('soloway.com.ua/search deep-link (with utm) to complete the booking.'),
   notes: z.array(z.string()).describe('Human-relayable caveats (past date, >6 pax clamp, partial, etc.).'),
   trips: z.array(tripSchema),
+  nearby_alternatives: z
+    .array(nearbyAlternativeSchema)
+    .describe(
+      'Only when trips is EMPTY: verified routes via bigger cities within ~60 km of the requested ' +
+        'endpoints. Each entry was CONFIRMED by a real search to have bookable trips on the date — ' +
+        'offer them to the user with the substitution distances, and call search_trips with the given ' +
+        'city ids to list the actual trips.',
+    ),
 };
 
 const inputSchema = {
@@ -142,6 +181,8 @@ function mapTrip(raw: SearchTripResponse, locale: Locale, passengers: number) {
 type MappedTrip = ReturnType<typeof mapTrip>;
 type TripOut = MappedTrip['trip'];
 
+type NearbyAlternativeOut = z.infer<typeof nearbyAlternativeSchema>;
+
 interface StructuredOverrides {
   resolved_from?: CityRef;
   resolved_to?: CityRef;
@@ -151,6 +192,7 @@ interface StructuredOverrides {
   booking_url?: string | null;
   notes?: string[];
   trips?: TripOut[];
+  nearby_alternatives?: NearbyAlternativeOut[];
 }
 
 /** Single source of the search_trips structured payload; branches pass only their deltas. */
@@ -166,6 +208,7 @@ function makeStructured(date: string, passengers: number, over: StructuredOverri
     booking_url: over.booking_url ?? null,
     notes: over.notes ?? [],
     trips: over.trips ?? [],
+    nearby_alternatives: over.nearby_alternatives ?? [],
   };
 }
 
@@ -175,15 +218,28 @@ function byDeparture(a: MappedTrip, b: MappedTrip): number {
   return cmp !== 0 ? cmp : a.trip.external_id.localeCompare(b.trip.external_id);
 }
 
+function renderAlternativeLine(alt: NearbyAlternativeOut): string {
+  const swap = alt.substitutions
+    .map((sub) => `${sub.nearby_city} is ${sub.distance_km} km from ${sub.replaces}`)
+    .join(', ');
+  const price = alt.min_price ? ` from ${alt.min_price.amount} ${alt.min_price.currency}` : '';
+  return `${alt.from_city_name} → ${alt.to_city_name} (${swap}): ${alt.trips_found} trip(s)${price}`;
+}
+
 function renderText(
   fromName: string,
   toName: string,
   date: string,
   trips: { prices: { amount: number; currency: string; primary: boolean }[]; carrier: { display_name: string }; departure: { datetime: string } }[],
   notes: string[],
+  alternatives: NearbyAlternativeOut[] = [],
 ): string {
   if (trips.length === 0) {
-    return `No trips found for ${fromName} → ${toName} on ${date}.${notes.length ? ' ' + notes.join(' ') : ''}`;
+    const base = `No trips found for ${fromName} → ${toName} on ${date}.`;
+    const alts = alternatives.length
+      ? ` Verified nearby alternatives: ${alternatives.map(renderAlternativeLine).join('; ')}. Offer these with the distances; booking links are in nearby_alternatives.`
+      : '';
+    return `${base}${alts}${notes.length ? ' ' + notes.join(' ') : ''}`;
   }
   const cheapest = trips[0]!;
   const native = cheapest.prices.find((p) => p.primary) ?? cheapest.prices[0]!;
@@ -194,6 +250,99 @@ function renderText(
       : `${native.amount} ${native.currency}`;
   const head = `Found ${trips.length} trip${trips.length === 1 ? '' : 's'} ${fromName} → ${toName} on ${date}. Cheapest: ${cheapest.carrier.display_name} from ${priceText}.`;
   return notes.length ? `${head} ${notes.join(' ')}` : head;
+}
+
+interface NearbyVerifyContext {
+  date: string;
+  passengers: number;
+  locale: Locale;
+  utmSource?: string;
+  originalFrom: string;
+  originalTo: string;
+}
+
+/**
+ * Verifies one substituted pair with a REAL (tighter-deadline) search. Returns the
+ * alternative only when bookable trips for the party size were confirmed — the
+ * agent must never relay a suggestion that leads to a second empty page.
+ */
+async function verifyNearbyPair(plan: NearbyPairPlan, ctx: NearbyVerifyContext): Promise<NearbyAlternativeOut | null> {
+  const slot = await searchSlots.acquire(config.MCP_BUSY_WAIT_MS);
+  if (!slot) return null; // saturated — silently skip, the fallback is best-effort
+
+  const fromId = String(plan.pair.from_id);
+  const toId = String(plan.pair.to_id);
+  let trips: SearchTripResponse[];
+  try {
+    const result = await backend.searchTrips(
+      { fromId, toId, date: ctx.date, passengers: ctx.passengers, locale: ctx.locale },
+      config.MCP_NEARBY_SEARCH_TIMEOUT_MS,
+    );
+    trips = result.trips;
+  } catch {
+    return null; // a failed pair is dropped, never fails the whole tool
+  } finally {
+    searchSlots.release();
+  }
+
+  const bookable = trips.filter(
+    (trip) => trip.free_seats >= ctx.passengers && (trip.booking_available || trip.purchase_available),
+  );
+  if (bookable.length === 0) return null;
+
+  const cheapest = bookable
+    .map((trip) => ({ trip, comparable: comparableUah(trip.prices) }))
+    .sort((a, b) => sortKeyUah(a.comparable) - sortKeyUah(b.comparable))[0]!;
+  const primaryPrice = cheapest.trip.prices.find((price) => price.primary) ?? cheapest.trip.prices[0] ?? null;
+
+  const names = routeNames(plan.pair, ctx.originalFrom, ctx.originalTo);
+  const deep = buildDeepLink({
+    fromCityId: fromId,
+    toCityId: toId,
+    date: ctx.date,
+    passengers: ctx.passengers,
+    utmSource: ctx.utmSource,
+    utmCampaign: 'nearby-fallback',
+  });
+  return {
+    case_no: plan.caseNo,
+    from_city_id: fromId,
+    from_city_name: names.from,
+    to_city_id: toId,
+    to_city_name: names.to,
+    substitutions: substitutionsOf(plan.pair, ctx.originalFrom, ctx.originalTo),
+    trips_found: bookable.length,
+    min_price: primaryPrice ? { amount: primaryPrice.amount, currency: primaryPrice.currency } : null,
+    min_price_uah: cheapest.comparable?.is_uah ? cheapest.comparable.amount : null,
+    booking_url: deep.url,
+  };
+}
+
+/**
+ * Nearby fallback for an empty search: fetch the substituted-pair matrix (in-memory
+ * on the backend) and verify wave 1 (cases 1+2) in parallel; case 3 (both sides
+ * substituted) is tried only when wave 1 confirmed nothing — the site's rule.
+ * Any failure (incl. a backend without the endpoint yet) degrades to no suggestions.
+ */
+async function findNearbyAlternatives(ctx: NearbyVerifyContext, fromId: string, toId: string): Promise<NearbyAlternativeOut[]> {
+  let matrix: NearbyPairsResponse;
+  try {
+    matrix = await backend.nearbyPairs(fromId, toId, ctx.locale);
+  } catch (err) {
+    logger.warn({ err: String(err) }, 'nearby.pairs.unavailable');
+    return [];
+  }
+
+  const verify = async (plans: NearbyPairPlan[]) =>
+    (await Promise.all(plans.map((plan) => verifyNearbyPair(plan, ctx)))).filter(
+      (alt): alt is NearbyAlternativeOut => alt !== null,
+    );
+
+  let alternatives = await verify(wave1Pairs(matrix, config.MCP_NEARBY_MAX_VERIFY));
+  if (alternatives.length === 0) alternatives = await verify(case3Pairs(matrix));
+  return alternatives.sort(
+    (a, b) => alternativeDistance(a.substitutions) - alternativeDistance(b.substitutions),
+  );
 }
 
 export function registerSearchTrips(server: McpServer): void {
@@ -209,7 +358,11 @@ export function registerSearchTrips(server: McpServer): void {
         'carrier\'s available passenger discounts (children by age, seniors, students, etc.) in carrier_discounts ' +
         'plus a quick discount_percent_range — surface these when listing options. Bookings complete on ' +
         'soloway.com.ua, not here. Searches work for any party size, but the booking link supports at most 6 ' +
-        'passengers (the site cap) — for 7+ the link is clamped to 6 and a note is added.',
+        'passengers (the site cap) — for 7+ the link is clamped to 6 and a note is added. When NOTHING runs ' +
+        'on the exact pair, the tool automatically verifies routes via bigger cities within ~60 km of the ' +
+        'requested endpoints and returns confirmed ones in nearby_alternatives (each with substitution ' +
+        'distances, trip count, cheapest price and its own booking link) — offer these instead of a bare ' +
+        '"no trips" answer.',
       inputSchema,
       outputSchema,
       annotations: { readOnlyHint: true, openWorldHint: false, destructiveHint: false, idempotentHint: true },
@@ -298,11 +451,33 @@ export function registerSearchTrips(server: McpServer): void {
           notes.push(`${droppedInvalid} trip(s) were omitted due to incomplete data.`);
         }
 
+        // Nearby fallback — only on a CLEAN empty result (a partial empty may just be
+        // a timeout; the retry note already covers it). Mirrors the site's behavior.
+        let nearbyAlternatives: NearbyAlternativeOut[] = [];
+        if (trips.length === 0 && !result.partial && config.MCP_NEARBY_ENABLED) {
+          nearbyAlternatives = await findNearbyAlternatives(
+            {
+              date: args.date, passengers, locale,
+              utmSource: args.utm_source,
+              originalFrom: fromRef.name, originalTo: toRef.name,
+            },
+            fromRef.city_id, toRef.city_id,
+          );
+          if (nearbyAlternatives.length > 0) {
+            notes.push(
+              `No direct trips ${fromRef.name} → ${toRef.name} on ${args.date}; ` +
+                `${nearbyAlternatives.length} verified nearby alternative route(s) are in nearby_alternatives — ` +
+                'offer them to the user with the substitution distances.',
+            );
+          }
+        }
+
         const structured = makeStructured(args.date, passengers, {
           resolved_from: fromRef, resolved_to: toRef,
           partial: result.partial, booking_url: deep.url, notes, trips,
+          nearby_alternatives: nearbyAlternatives,
         });
-        return reply(structured, renderText(fromRef.name, toRef.name, args.date, trips, notes));
+        return reply(structured, renderText(fromRef.name, toRef.name, args.date, trips, notes, nearbyAlternatives));
       } catch (err) {
         if (err instanceof BackendError) return toolError(`SoloWay returned an error (${err.status}) for this search. Please try again shortly.`);
         return unexpectedToolError(err, 'search_trips');

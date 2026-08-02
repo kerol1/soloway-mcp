@@ -5,6 +5,7 @@ import type {
   BackendCity,
   CityAutocompleteResponse,
   CalendarPricesResponse,
+  NearbyPairsResponse,
   TripDetailsResponse,
 } from './types.js';
 import { consumeTripsStream, type SseResult } from './sse.js';
@@ -45,7 +46,7 @@ export class BackendClient {
    * collected with partial:true (incl. an empty list if the connect itself timed out). Throws
    * BackendError only on a non-OK HTTP status.
    */
-  async searchTrips(params: SearchParams): Promise<SseResult> {
+  async searchTrips(params: SearchParams, overallMs: number = config.SSE_READ_TIMEOUT_MS): Promise<SseResult> {
     const url = `${this.baseUrl}/api/trips/stream?${qs({
       fromId: params.fromId,
       toId: params.toId,
@@ -55,7 +56,7 @@ export class BackendClient {
     })}`;
     const controller = new AbortController();
     // Overall deadline covers connect + stream; the idle watchdog lives in the consumer.
-    const overallTimer = setTimeout(() => controller.abort(), config.SSE_READ_TIMEOUT_MS);
+    const overallTimer = setTimeout(() => controller.abort(), overallMs);
     try {
       const res = await fetch(url, {
         headers: { Accept: 'text/event-stream' },
@@ -63,8 +64,8 @@ export class BackendClient {
       });
       if (!res.ok) throw new BackendError(res.status, `search stream ${res.status}`);
       return await consumeTripsStream(res.body, controller, {
-        idleMs: config.SSE_IDLE_TIMEOUT_MS,
-        overallMs: config.SSE_READ_TIMEOUT_MS,
+        idleMs: Math.min(config.SSE_IDLE_TIMEOUT_MS, overallMs),
+        overallMs,
       });
     } catch (err) {
       if (err instanceof BackendError) throw err;
@@ -101,6 +102,15 @@ export class BackendClient {
       `/api/calendar-prices?${qs({ fromId, toId, month })}`,
       'calendar-prices',
     );
+  }
+
+  /**
+   * Substituted city pairs for an empty search (in-memory on the backend, zero carrier
+   * calls). A backend without the endpoint (pre-feature deploy) or with the kill-switch
+   * off degrades to empty arrays at the CALLER (BackendError is caught there).
+   */
+  async nearbyPairs(fromId: string, toId: string, locale: Locale): Promise<NearbyPairsResponse> {
+    return this.getJson<NearbyPairsResponse>(`/api/trips/nearby-pairs?${qs({ fromId, toId, locale })}`, 'nearby-pairs');
   }
 
   /** Stops, discounts, seat layout for one trip. `externalId` from a search result. */
