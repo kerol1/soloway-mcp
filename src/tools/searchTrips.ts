@@ -362,7 +362,8 @@ export function registerSearchTrips(server: McpServer): void {
         'on the exact pair, the tool automatically verifies routes via bigger cities within ~60 km of the ' +
         'requested endpoints and returns confirmed ones in nearby_alternatives (each with substitution ' +
         'distances, trip count, cheapest price and its own booking link) — offer these instead of a bare ' +
-        '"no trips" answer.',
+        '"no trips" answer. If nothing runs nearby either, check other dates with get_calendar_prices ' +
+        'and offer the nearest date that has trips.',
       inputSchema,
       outputSchema,
       annotations: { readOnlyHint: true, openWorldHint: false, destructiveHint: false, idempotentHint: true },
@@ -454,20 +455,31 @@ export function registerSearchTrips(server: McpServer): void {
         // Nearby fallback — only on a CLEAN empty result (a partial empty may just be
         // a timeout; the retry note already covers it). Mirrors the site's behavior.
         let nearbyAlternatives: NearbyAlternativeOut[] = [];
-        if (trips.length === 0 && !result.partial && config.MCP_NEARBY_ENABLED) {
-          nearbyAlternatives = await findNearbyAlternatives(
-            {
-              date: args.date, passengers, locale,
-              utmSource: args.utm_source,
-              originalFrom: fromRef.name, originalTo: toRef.name,
-            },
-            fromRef.city_id, toRef.city_id,
-          );
+        if (trips.length === 0 && !result.partial) {
+          if (config.MCP_NEARBY_ENABLED) {
+            nearbyAlternatives = await findNearbyAlternatives(
+              {
+                date: args.date, passengers, locale,
+                utmSource: args.utm_source,
+                originalFrom: fromRef.name, originalTo: toRef.name,
+              },
+              fromRef.city_id, toRef.city_id,
+            );
+          }
           if (nearbyAlternatives.length > 0) {
             notes.push(
               `No direct trips ${fromRef.name} → ${toRef.name} on ${args.date}; ` +
                 `${nearbyAlternatives.length} verified nearby alternative route(s) are in nearby_alternatives — ` +
                 'offer them to the user with the substitution distances.',
+            );
+          } else {
+            // Nothing on this date and nothing nearby — the date itself may be the
+            // problem. Point the assistant at the calendar tool so it can offer the
+            // nearest date that DOES have trips ("none today, but 2 days later from …").
+            notes.push(
+              `No trips ${fromRef.name} → ${toRef.name} on ${args.date} and no nearby alternatives confirmed. ` +
+                `The route may run on other dates: call get_calendar_prices for this route (month ${args.date.slice(0, 7)}) ` +
+                'and offer the user the nearest date with available trips.',
             );
           }
         }
