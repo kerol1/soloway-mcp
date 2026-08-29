@@ -3,6 +3,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { config } from '../config.js';
 import { logger } from '../lib/logger.js';
 import { makeMcpServer } from '../server.js';
+import { summarizeMcpBody } from '../lib/callSummary.js';
 import { originGuard, originAllowed } from './originGuard.js';
 
 /** Cached backend-readiness probe so /readyz doesn't hammer the backend on every health tick. */
@@ -72,6 +73,9 @@ export function createApp(): Express {
   app.locals.originGuardMounted = true;
 
   app.post('/mcp', async (req, res) => {
+    const startedAt = Date.now();
+    // Read the summary BEFORE the transport consumes the body (§5.4).
+    const calls = summarizeMcpBody(req.body);
     const server = makeMcpServer(); // per-request (stateless default, §3.5)
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined, // stateless
@@ -85,6 +89,7 @@ export function createApp(): Express {
       allowedHosts: config.expectedHosts,
     });
     res.on('close', () => {
+      logger.info({ calls, status: res.statusCode, duration_ms: Date.now() - startedAt }, 'mcp.request');
       void transport.close();
       void server.close();
     });
