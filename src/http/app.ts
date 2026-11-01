@@ -4,29 +4,46 @@ import { config } from '../config.js';
 import { logger } from '../lib/logger.js';
 import { makeMcpServer } from '../server.js';
 import { summarizeMcpBody } from '../lib/callSummary.js';
+import { backendHeaders } from '../backend/client.js';
 import { originGuard, originAllowed } from './originGuard.js';
 
-/** Cached backend-readiness probe so /readyz doesn't hammer the backend on every health tick. */
-let readyCache: { ok: boolean; at: number } | null = null;
+/** /readyz asks the backend at most this often, so it doesn't hammer it on every health tick. */
 const READY_TTL_MS = 30_000;
+const READY_TIMEOUT_MS = 4_000;
 
-async function backendReachable(): Promise<boolean> {
-  const now = Date.now();
-  if (readyCache && now - readyCache.at < READY_TTL_MS) return readyCache.ok;
-  let ok = false;
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), 4_000);
+/**
+ * The /readyz probe: ready only when the backend answers 200 to a brand-scoped /api call with this server's
+ * X-Brand, the same header every tool call sends. A backend that is up but refuses the brand
+ * (400 BRAND_REQUIRED / BRAND_UNKNOWN) would refuse every tool call too, so it is not ready.
+ * The call is the popular-cities list: public like every endpoint the tools use, answered from a cache with
+ * no carrier behind it. Each probe keeps its answer for 30 s.
+ */
+const READY_PROBE_PATH = '/api/search/bus/popular?locale=uk&limit=1';
+export function backendReadiness(baseUrl: string = config.BACKEND_BASE_URL): () => Promise<boolean> {
+  let cached: { ok: boolean; at: number } | null = null;
+  return async () => {
+    const now = Date.now();
+    if (cached && now - cached.at < READY_TTL_MS) return cached.ok;
+    const ok = await backendAnswered(baseUrl);
+    cached = { ok, at: now };
+    return ok;
+  };
+}
+
+async function backendAnswered(baseUrl: string): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), READY_TIMEOUT_MS);
   try {
-    // EXACT path only — SecurityConfig permits exactly /actuator/health, not the /health/** group.
-    const res = await fetch(`${config.BACKEND_BASE_URL}/actuator/health`, { signal: ac.signal });
-    ok = res.ok;
-  } catch {
-    ok = false;
+    const res = await fetch(`${baseUrl}${READY_PROBE_PATH}`, { headers: backendHeaders(), signal: controller.signal });
+    if (res.status === 200) return true;
+    logger.warn({ status: res.status }, 'readyz.not_ready');
+    return false;
+  } catch (err) {
+    logger.warn({ err: String(err) }, 'readyz.not_ready');
+    return false;
   } finally {
     clearTimeout(timer);
   }
-  readyCache = { ok, at: now };
-  return ok;
 }
 
 function methodNotAllowed(_req: Request, res: Response): void {
@@ -45,13 +62,14 @@ export function createApp(): Express {
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '256kb' }));
+  const backendReady = backendReadiness();
 
-  // Liveness (HEALTHCHECK-independent) + readiness (backend reachability) + crawl exclusion.
+  // Liveness (HEALTHCHECK-independent) + readiness (the backend serves this brand) + crawl exclusion.
   app.get('/healthz', (_req, res) => {
     res.json({ ok: true });
   });
   app.get('/readyz', async (_req, res) => {
-    const ready = await backendReachable();
+    const ready = await backendReady();
     res.status(ready ? 200 : 503).json({ ready });
   });
   app.get('/robots.txt', (_req, res) => {

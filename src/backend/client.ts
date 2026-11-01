@@ -29,6 +29,15 @@ export interface SearchParams {
   locale: Locale;
 }
 
+/**
+ * Headers of every backend /api call — the readiness probe's included. X-Brand is mandatory: the backend
+ * answers 400 BRAND_REQUIRED without it, and nginx — which sets it for browsers — is not between this
+ * server and the backend.
+ */
+export function backendHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  return { ...extra, 'X-Brand': config.BRAND_CODE };
+}
+
 function qs(params: Record<string, string | number>): string {
   const sp = new URLSearchParams();
   // Query params are the backend's camelCase Java names (SNAKE_CASE is body-only). Sending
@@ -59,7 +68,7 @@ export class BackendClient {
     const overallTimer = setTimeout(() => controller.abort(), overallMs);
     try {
       const res = await fetch(url, {
-        headers: { Accept: 'text/event-stream' },
+        headers: backendHeaders({ Accept: 'text/event-stream' }),
         signal: controller.signal,
       });
       if (!res.ok) throw new BackendError(res.status, `search stream ${res.status}`);
@@ -124,7 +133,7 @@ export class BackendClient {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), config.HTTP_READ_TIMEOUT_MS);
     try {
-      const res = await fetch(`${this.baseUrl}${path}`, { signal: controller.signal });
+      const res = await fetch(`${this.baseUrl}${path}`, { headers: backendHeaders(), signal: controller.signal });
       if (!res.ok) throw new BackendError(res.status, `${label} ${res.status}`);
       return (await res.json()) as T;
     } finally {

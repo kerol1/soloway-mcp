@@ -14,6 +14,8 @@ const boolish = (def: string) =>
 const RawConfig = z.object({
   PORT: z.coerce.number().int().positive().default(8088),
   BACKEND_BASE_URL: z.string().url().default('http://backend:8080'),
+  // The brand this server's backend calls are attributed to — sent as X-Brand (ADR 0005).
+  BRAND_CODE: z.string().regex(/^[a-z0-9-]{2,30}$/).default('soloway'),
   PUBLIC_BASE_URL: z.string().url().default('https://soloway.com.ua'),
   // CSV of accepted Host header values for no-Origin (server-to-server) requests; `*` accepts any
   // host AND disables the SDK's DNS-rebinding belt (sandbox/introspection runs — never production).

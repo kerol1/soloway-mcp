@@ -45,6 +45,7 @@ All settings are env vars with sane defaults — see [.env.example](.env.example
 |---|---|---|
 | `PORT` | `8088` | HTTP port |
 | `BACKEND_BASE_URL` | `https://soloway.com.ua` (image) | SoloWay API origin |
+| `BRAND_CODE` | `soloway` | Brand code sent as `X-Brand` on backend calls |
 | `EXPECTED_HOST` | `*` (image) | CSV of accepted `Host` values for no-Origin requests. `*` accepts any host and disables the SDK DNS-rebinding belt — fine for local/sandbox runs; **pin your public hostname in production** (our prod sets `mcp.soloway.com.ua`). |
 | `ALLOWED_ORIGINS` | claude.ai / openai.com / soloway.com.ua | CSV, suffix wildcards supported (`https://*.claude.ai`) |
 | `DEFAULT_LOCALE` | `uk` | `uk` or `en` |
